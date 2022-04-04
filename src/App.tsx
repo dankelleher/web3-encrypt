@@ -6,9 +6,10 @@ import Web3Modal, {IProviderOptions} from "web3modal";
 import {CoinbaseWalletSDK} from "@coinbase/wallet-sdk";
 import {toHex, truncateAddress} from "./utils";
 import {networkParams} from "./networks";
-import {Button, Input, Select, Tooltip} from "antd";
+import {Button, Input, Select} from "antd";
 import {CheckCircleFilled, WarningFilled} from "@ant-design/icons";
-
+import { bufferToHex } from "ethereumjs-util";
+import { encrypt } from "@metamask/eth-sig-util";
 
 const providerOptions: IProviderOptions = {
   metamask: {
@@ -60,6 +61,10 @@ function App() {
   const [network, setNetwork] = useState<number>();
   const [message, setMessage] = useState("");
   const [signedMessage, setSignedMessage] = useState("");
+  const [encryptedMessage, setEncryptedMessage] = useState("");
+  const [decryptedMessage, setDecryptedMessage] = useState("");
+  const [encryptionPublicKey, setEncryptionPublicKey] = useState<string>();
+  const [encryptRecipient, setEncryptRecipient] = useState<string>();
   const [verified, setVerified] = useState<boolean>();
 
   const connectWallet = async () => {
@@ -70,7 +75,12 @@ function App() {
       const network = await library.getNetwork();
       setProvider(provider);
       setLibrary(library);
-      if (accounts) setAccount(accounts[0]);
+      if (accounts) {
+        const encryptionPublicKey = await library.send('eth_getEncryptionPublicKey', [accounts[0]]);
+        setAccount(accounts[0]);
+        setEncryptionPublicKey(encryptionPublicKey);
+        setEncryptRecipient(encryptionPublicKey);
+      }
       setChainId(network.chainId);
     } catch (error) {
       setError(error);
@@ -144,6 +154,32 @@ function App() {
     setVerified(undefined);
   };
 
+  // from https://docs.metamask.io/guide/rpc-api.html#encrypting
+  const encryptMessage = async () => {
+    if (!message || !library || !encryptRecipient) return;
+
+    const encryptedMessage = bufferToHex(
+      Buffer.from(
+        JSON.stringify(
+          encrypt({
+            publicKey: encryptRecipient,
+            data: message,
+            version: 'x25519-xsalsa20-poly1305',
+          })
+        ),
+        'utf8'
+      )
+    );
+
+    setEncryptedMessage(encryptedMessage);
+  };
+
+  const decryptMessage = async () => {
+    if (!encryptedMessage || !library || !account) return;
+    const decryptedMessage = await library.send('eth_decrypt', [encryptedMessage, account]);
+    setDecryptedMessage(decryptedMessage);
+  };
+
   const disconnect = async () => {
     await web3Modal.clearCachedProvider();
     refreshState();
@@ -159,7 +195,9 @@ function App() {
     if (provider?.on) {
       const handleAccountsChanged = (accounts: string[]) => {
         console.log("accountsChanged", accounts);
-        if (accounts) setAccount(accounts[0]);
+        if (accounts) {
+          setAccount(accounts[0]);
+        }
       };
 
       const handleChainChanged = (_hexChainId: number) => {
@@ -205,59 +243,86 @@ function App() {
             )}
           </div>
 
-          <Tooltip title={account} placement="right">
-            <div>{`Account: ${truncateAddress(account || '')}`}</div>
-          </Tooltip>
+          <div>{`Account: ${truncateAddress(account || '')}`}</div>
+          <div>{`My Encryption Public Key: ${encryptionPublicKey}`}</div>
           <div>{`Network ID: ${chainId ? chainId : "No Network"}`}</div>
         </div>
         {account && (
           <div>
-              <div>
-                <Button onClick={switchNetwork} disabled={!network}>
-                  Switch Network
-                </Button>
-                <Select placeholder="Select network" onChange={handleNetwork}>
-                  <option value="3">Ropsten</option>
-                  <option value="4">Rinkeby</option>
-                  <option value="42">Kovan</option>
-                  <option value="1666600000">Harmony</option>
-                  <option value="42220">Celo</option>
-                </Select>
-              </div>
-              <div>
-                <Button onClick={signMessage} disabled={!message}>
-                  Sign Message
-                </Button>
-                <Input
-                  placeholder="Set Message"
-                  maxLength={20}
-                  onChange={handleInput}
-                  width="140px"
-                />
-                {signature ? (
-                  <Tooltip title={signature} placement="bottom">
-                    <div>{`Signature: ${truncateAddress(signature)}`}</div>
-                  </Tooltip>
-                ) : null}
-              </div>
-              <div>
-                <Button onClick={verifyMessage} disabled={!signature}>
-                  Verify Message
-                </Button>
-                {verified !== undefined ? (
-                  verified ? (
-                    <div>
-                      <CheckCircleFilled color="green" />
-                      <div>Signature Verified!</div>
-                    </div>
-                  ) : (
-                    <div>
-                      <WarningFilled color="red" />
-                      <div>Signature Denied!</div>
-                    </div>
-                  )
-                ) : null}
-              </div>
+            <div>
+              <Button onClick={switchNetwork} disabled={!network}>
+                Switch Network
+              </Button>
+              <Select placeholder="Select network" onChange={handleNetwork}>
+                <option value="3">Ropsten</option>
+                <option value="4">Rinkeby</option>
+                <option value="42">Kovan</option>
+                <option value="1666600000">Harmony</option>
+                <option value="42220">Celo</option>
+              </Select>
+            </div>
+            <div>
+              <Input
+                placeholder="Set Message"
+                maxLength={20}
+                onChange={handleInput}
+                width="140px"
+              />
+            </div>
+            <div>
+              <Button onClick={signMessage} disabled={!message}>
+                Sign Message
+              </Button>
+              {signature ? (
+                <div>{`Signature: ${truncateAddress(signature)}`}</div>
+              ) : null}
+            </div>
+            <div>
+              <Button onClick={verifyMessage} disabled={!signature}>
+                Verify Message
+              </Button>
+              {verified !== undefined ? (
+                verified ? (
+                  <div>
+                    <CheckCircleFilled color="green" />
+                    <div>Signature Verified!</div>
+                  </div>
+                ) : (
+                  <div>
+                    <WarningFilled color="red" />
+                    <div>Signature Denied!</div>
+                  </div>
+                )
+              ) : null}
+            </div>
+            <div>
+              <Button onClick={encryptMessage} disabled={!message}>
+                Encrypt Message
+              </Button>
+              Recipient:
+              <Input
+                placeholder="Recipient"
+                value={encryptRecipient}
+                onChange={(e) => setEncryptRecipient(e.target.value)}
+                width="140px"
+              />
+                <div>Encrypted message:
+                  <Input
+                    placeholder="Encrypted message"
+                    value={encryptedMessage}
+                    onChange={(e) => setEncryptedMessage(e.target.value)}
+                    width="140px"
+                  />
+                </div>
+            </div>
+            <div>
+              <Button onClick={decryptMessage} disabled={!encryptedMessage}>
+                Decrypt Message
+              </Button>
+              {decryptedMessage ? (
+                <div>{`Decrypted message: ${decryptedMessage}`}</div>
+              ) : null}
+            </div>
           </div>
         )}
         <div>{error ? error.message : null}</div>
